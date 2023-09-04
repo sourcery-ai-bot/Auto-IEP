@@ -25,21 +25,14 @@ import  tkinter as tk
 from tkinter import filedialog, ttk
 import threading
 
-# > API key for openai call, removed if being sent for outside viewing
+#Constants
 
 API_KEY = "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"
-
+API_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
 # > Function definition for test selection
-def file_select_WCJ():
-    root = tk.Tk()
-    root.withdraw()
-    file_path = filedialog.askopenfilename(title = "Select a WCJ File")
-    return file_path
 # In[4]:
-
 # >Function definition for handling WCJ test reports
-
 # In[6]:
 
 def handle_WCJ_test_files(selected_file):
@@ -177,8 +170,6 @@ def handle_WCJ_test_files(selected_file):
     Data: """
 
     #Beginning of AI script
-    API_ENDPOINT = "https://api.openai.com/v1/chat/completions"
-    
     #Openai interaction function
     def generate_chat_completion(messages, model="gpt-4", temperature=1, max_tokens=None):
         headers = {
@@ -218,89 +209,131 @@ def handle_WCJ_test_files(selected_file):
     return (response_text)
 
 
-# > Solicit user interaction and run program
+# > GUI THINGS --------------------------------------------------------------------------
+class AutoIEPGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Auto-IEP")
+        self.root.geometry("800x600")
+        self.text_frame = None
+        self.text_widget = None
+        self.result_title = None
+        self.save_button = None
+        self.new_report_button = None
+        self.progress = None
+        self.scrollbar = None
+        self.response_text = ""
+        
+        self.main_frame = tk.Frame(self.root)
+        self.main_frame.pack(pady=20)
+        
+        label = tk.Label(self.main_frame, text="Supported tests are:")
+        label.pack(pady=10)
+        
+        self.selected_test_var = tk.StringVar(root)
+        test_dropdown = ttk.Combobox(self.main_frame, textvariable=self.selected_test_var, values=["1: WCJ"])
+        test_dropdown.pack(pady=10)
+        test_dropdown.current(0)
+        
+        process_button = tk.Button(self.main_frame, text="Select File and Process", command=self.main_program)
+        process_button.pack(pady=20)
+        
+        self.progress = ttk.Progressbar(self.root, orient="horizontal", length=300, mode="determinate")
+        self.spinner_label = tk.Label(self.root, text="Creating report :)")
 
-# In[ ]:
+    def on_api_call_complete(self, response_text):
+        self.response_text = response_text
+        self.progress.pack_forget()
+        self.spinner_label.pack_forget()
 
-def on_api_call_complete():
-    # Hide the progress bar and spinner label
-    progress.pack_forget()
-    spinner_label.pack_forget()
+        self.result_title = tk.Label(self.root, text="Auto IEP Report: ", font=("Arial", 12, "bold"))
+        self.result_title.pack(pady=20)
+        
+        self.text_frame = tk.Frame(self.root)  # Change this line to make text_frame an instance variable
+        self.text_frame.pack(pady=20, fill=tk.BOTH, expand=1)
 
-    # Display the report in the root window
-    text_widget = tk.Text(root, wrap=tk.WORD)
-    text_widget.insert(tk.END, response_text)
-    text_widget.pack(expand=1, fill="both")
-    progress['value'] = 0
-    root.after_cancel(update_progress)
+        self.text_widget = tk.Text(self.text_frame, wrap=tk.WORD, font=("Arial", 12))
+        self.text_widget.insert(tk.END, self.response_text)
+        self.text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
 
-# API call in a separate thread
-def api_call_thread(selected_file):
-    global response_text
-    progress["value"] = 20
-    response_text = handle_WCJ_test_files(selected_file)
-    root.after(50, on_api_call_complete)  # To update UI after API call
+        self.scrollbar = tk.Scrollbar(self.text_frame, command=self.text_widget.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-# Start the API call
-def start_api_call():
-    selected_test = test_select()
-    if selected_test == 0:
-        selected_file = file_select_WCJ()
-        threading.Thread(target=api_call_thread, args=(selected_file,)).start()
+        self.text_widget.config(yscrollcommand=self.scrollbar.set)
 
-# File selection with a delay
-def delayed_file_selection():
-    global selected_file
-    selected_file = file_select_WCJ()
-    if selected_file:  # Ensure the file was selected (not canceled)
-        main_frame.pack_forget()
-        show_progress_view()
-        update_progress()
-        threading.Thread(target=api_call_thread, args=(selected_file,)).start()
+        self.save_button = tk.Button(self.root, text="Save Results", command=self.save_results)
+        self.save_button.pack(pady=20)
 
-# Update the progress bar's value
-def update_progress():
-    current_value = progress["value"]
-    new_value = current_value + 0.12
-    progress["value"] = new_value
-    root.after(100, update_progress)
+        self.new_report_button = tk.Button(self.root, text="Generate New Report", command=self.generate_new_report)
+        self.new_report_button.pack(pady=20)
 
-# Main function to handle user selection
-def main_program():
-    selected_test = selected_test_var.get()
-    if selected_test == "1: WCJ":
-        root.after(100, delayed_file_selection)
+    def api_call_thread(self, selected_file):
+        non_thread_response = handle_WCJ_test_files(selected_file)
+        self.root.after(10, lambda: self.on_api_call_complete(non_thread_response))
 
-# GUI Initialization
+    def delayed_file_selection(self):
+        selected_file = self.file_select_WCJ()
+        if selected_file:
+            self.main_frame.pack_forget()
+            self.show_progress_view()
+            self.update_progress()
+            threading.Thread(target=self.api_call_thread, args=(selected_file,)).start()
+
+    def update_progress(self):
+        current_value = self.progress["value"]
+        new_value = current_value + 0.2
+        self.progress["value"] = new_value
+        self.root.after(100, self.update_progress)
+
+    def main_program(self):
+        selected_test = self.selected_test_var.get()
+        if selected_test == "1: WCJ":
+            self.root.after(100, self.delayed_file_selection)
+
+    def show_progress_view(self):
+        self.progress.pack(pady=20)
+        self.spinner_label.pack(pady=20)
+
+    def save_results(self):
+        file_name = filedialog.asksaveasfilename(title="Save Results", filetypes=[("Text files", "*.txt"), ("All files", "*.*")], defaultextension=".txt")
+        if file_name:
+            with open(file_name, 'w') as file:
+                file.write(self.response_text)
+            tk.messagebox.showinfo("Success", "Results saved successfully!")
+
+    def generate_new_report(self):
+        if self.text_widget:
+            self.text_widget.pack_forget()
+        if self.text_frame:
+            self.text_frame.pack_forget()
+            
+        # Hide other widgets
+        if self.result_title:
+            self.result_title.pack_forget()
+        if self.save_button:
+            self.save_button.pack_forget()
+        if self.new_report_button:
+            self.new_report_button.pack_forget()
+        if self.scrollbar:
+            self.scrollbar.pack_forget()
+        if self.progress:
+            self.progress.pack_forget()
+        if self.spinner_label:
+            self.spinner_label.pack_forget()
+            
+        self.response_text = ""
+        self.progress["value"] = 0
+        self.main_frame.pack(pady=20)
+
+    def file_select_WCJ(self):
+        self.root.withdraw()  # hide main window
+        file_path = filedialog.askopenfilename(title = "Select a WCJ File")
+        self.root.deiconify()  # show main window
+        return file_path
+
+# Execution:
 root = tk.Tk()
-root.title("Auto-IEP")
-root.geometry("800x600")
-
-main_frame = tk.Frame(root)
-main_frame.pack(pady=20)
-
-label = tk.Label(main_frame, text="Supported tests are:")
-label.pack(pady=10)
-
-selected_test_var = tk.StringVar(root)
-test_dropdown = ttk.Combobox(main_frame, textvariable=selected_test_var, values=["1: WCJ"])
-test_dropdown.pack(pady=10)
-test_dropdown.current(0)
-
-process_button = tk.Button(main_frame, text="Select File and Process", command=main_program)
-process_button.pack(pady=20)
-
-# Create a progress bar outside the main frame (so it's hidden initially)
-progress = ttk.Progressbar(root, orient="horizontal", length=300, mode="determinate")
-progress["value"] = 0
-
-spinner_label = tk.Label(root, text="Creating report :)")
-
-def show_progress_view():
-    progress.pack(pady=20)
-    spinner_label.pack(pady=20)  # Display the spinner label under the progress bar
-
-# Start tkinter loop
+app = AutoIEPGUI(root)
 root.mainloop()
 # In[ ]:
 
