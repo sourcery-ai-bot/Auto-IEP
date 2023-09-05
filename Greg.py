@@ -30,148 +30,157 @@ import threading
 API_KEY = "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"
 API_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
-# > Function definition for test selection
-# In[4]:
-# >Function definition for handling WCJ test reports
-# In[6]:
+class Data_Extraction:
+    def __init__(self, selected_file):
+        self.selected_file = selected_file
 
-def handle_WCJ_test_files(selected_file):
-    #Convert student file to tables
-    doc = Document(selected_file)
-    tables = doc.tables
+    def handle_WCJ_test_files(self):
+        #Convert student file to tables
+        doc = Document(self.selected_file)
+        tables = doc.tables
 
-    #Turn tables into dataframe
-    def table_to_df(table):
+        #Turn tables into dataframe
+        def table_to_df(table):
+            data = []
+            for row in table.rows:
+                data.append([cell.text for cell in row.cells])
+            df = pd.DataFrame(data)
+            df.columns = df.iloc[0]
+            df = df.drop(0)
+            return df
+        dataframes = [table_to_df(table) for table in tables]
+
+
+        # Extract the text from the document
+        text = [p.text for p in doc.paragraphs if p.text.strip() != ""]
+
+        # Extract the score ranges and classifications
         data = []
-        for row in table.rows:
-            data.append([cell.text for cell in row.cells])
-        df = pd.DataFrame(data)
-        df.columns = df.iloc[0]
-        df = df.drop(0)
-        return df
-    dataframes = [table_to_df(table) for table in tables]
+        for line in text:
+            # Search for lines that contain a score range and a classification
+            match = re.search(r'(\d+ and [a-zA-Z]+|\d+ to \d+)\s*(.*)', line)
+            if match:
+                score_range = match.group(1)
+                classification = match.group(2)
+                data.append((score_range, classification))
 
+        # Create a DataFrame for Score Ranges
+        df_scoreranges = pd.DataFrame(data, columns=['Standard Score (SS) Range', 'WJIV Classification'])
 
-    # Extract the text from the document
-    text = [p.text for p in doc.paragraphs if p.text.strip() != ""]
+        #Flag for having run the basic data transformer
+        ran = False
 
-    # Extract the score ranges and classifications
-    data = []
-    for line in text:
-        # Search for lines that contain a score range and a classification
-        match = re.search(r'(\d+ and [a-zA-Z]+|\d+ to \d+)\s*(.*)', line)
-        if match:
-            score_range = match.group(1)
-            classification = match.group(2)
-            data.append((score_range, classification))
+        #Data transformer for basic info, name, dob etc.
+        for dataframe in dataframes:
+            if 'Name: ' in dataframe.columns[0] and ran == False:
+                data = {
+                    'Name': [dataframe.columns[0].split(':')[1].strip()],
+                    'DOB': [dataframe.iloc[0, 0].split(':')[1].strip()],
+                    'Sex': [dataframe.iloc[2, 0].split(':')[1].strip()],
+                    'ID': [dataframe.iloc[2, 1].split('ID:')[1].strip()]
+                }
+                dataframenew = pd.DataFrame(data)
+                ran = True
+                
+        #Saving real student name in a string so it can be placed into final response
+        dataframes[0] = dataframenew
+        REALSTUDENTNAME = dataframes[0].iloc[0,0].split(', ')[1].strip()
 
-    # Create a DataFrame for Score Ranges
-    df_scoreranges = pd.DataFrame(data, columns=['Standard Score (SS) Range', 'WJIV Classification'])
+        #Function to convert score ranges to integers
+        def convert_range_to_integers(score_range):
+            if 'and above' in score_range:
+                return [int(score_range.split(' ')[0]), float('inf')]
+            elif 'and Below' in score_range:
+                return [float('-inf'), int(score_range.split(' ')[0])]
+            else:
+                return [int(x) for x in score_range.split(' to ')]
 
-    #Flag for having run the basic data transformer
-    ran = False
+        #Apply the function to the dataframe
+        df_scoreranges['Score Range'] = df_scoreranges['Standard Score (SS) Range'].apply(convert_range_to_integers)
 
-    #Data transformer for basic info, name, dob etc.
-    for dataframe in dataframes:
-        if 'Name: ' in dataframe.columns[0] and ran == False:
-            data = {
-                'Name': [dataframe.columns[0].split(':')[1].strip()],
-                'DOB': [dataframe.iloc[0, 0].split(':')[1].strip()],
-                'Sex': [dataframe.iloc[2, 0].split(':')[1].strip()],
-                'ID': [dataframe.iloc[2, 1].split('ID:')[1].strip()]
-            }
-            dataframenew = pd.DataFrame(data)
-            ran = True
-            
-    #Saving real student name in a string so it can be placed into final response
-    dataframes[0] = dataframenew
-    REALSTUDENTNAME = dataframes[0].iloc[0,0].split(', ')[1].strip()
+        #Adding a proficiency column for scores
+        def get_proficiency(score):
+            for index, row in df_scoreranges.iterrows():
+               if not score == '' and row['Score Range'][0] <= int(score) <= row['Score Range'][1]:
+                    return row['WJIV Classification']
+            return 'Unknown'
+        proficiency_dfs = []
+        for i, dataframe in enumerate(dataframes):
+            if 'Cluster' in dataframes[i].columns:
+                dataframes[i]['Proficiency'] = dataframes[i]['Current Scores'].apply(get_proficiency)
+                proficiency_dfs.append(dataframes[i])
+        allScores = pd.concat(proficiency_dfs)
+        allScores = allScores[allScores['Proficiency'] != 'Unknown']
+        allScores = allScores.reindex(axis = 0)
 
-    #Function to convert score ranges to integers
-    def convert_range_to_integers(score_range):
-        if 'and above' in score_range:
-            return [int(score_range.split(' ')[0]), float('inf')]
-        elif 'and Below' in score_range:
-            return [float('-inf'), int(score_range.split(' ')[0])]
-        else:
-            return [int(x) for x in score_range.split(' to ')]
+        #Creating a sentences list for our prompt, starting with test proficiencies
+        student_name = "Placeholder"
+        sentences = []
+        for index, row in allScores.iterrows():
+            subject_area = row['Cluster']
+            proficiency = row['Proficiency']
+            sentence = f"{student_name} has {proficiency} proficiency in {subject_area}."
+            sentences.append(sentence)
 
-    #Apply the function to the dataframe
-    df_scoreranges['Score Range'] = df_scoreranges['Standard Score (SS) Range'].apply(convert_range_to_integers)
+        #QUALITATIVE OBS added to sentences
+        observations_dfs = []
+        for i, dataframe in enumerate(dataframes):
+            if 'Woodcock-Johnson IV Tests of Achievement Form A and Extended Qualitative Observations' in dataframes[i].columns:
+                observations_dfs.append(dataframes[i])
+        observations = pd.concat(observations_dfs, ignore_index=True)
+        observations = observations.iloc[:, 1]
+        observations = observations.to_frame()
+        observations = observations.reindex(axis = 0)
+        for index, row in observations.iterrows():
+            comment = row['Woodcock-Johnson IV Tests of Achievement Form A and Extended Qualitative Observations']
+            sentence = f"In regards to {comment}"
+            #Replaces student name FERPA
+            sentence = sentence.replace(REALSTUDENTNAME, "Placeholder")
+            sentences.append(sentence)
 
-    #Adding a proficiency column for scores
-    def get_proficiency(score):
-        for index, row in df_scoreranges.iterrows():
-           if not score == '' and row['Score Range'][0] <= int(score) <= row['Score Range'][1]:
-                return row['WJIV Classification']
-        return 'Unknown'
-    proficiency_dfs = []
-    for i, dataframe in enumerate(dataframes):
-        if 'Cluster' in dataframes[i].columns:
-            dataframes[i]['Proficiency'] = dataframes[i]['Current Scores'].apply(get_proficiency)
-            proficiency_dfs.append(dataframes[i])
-    allScores = pd.concat(proficiency_dfs)
-    allScores = allScores[allScores['Proficiency'] != 'Unknown']
-    allScores = allScores.reindex(axis = 0)
+        #TEST OBS added to sentences
+        observations_dfstest = []
+        for i, dataframe in enumerate(dataframes):
+            if 'Woodcock-Johnson IV Tests of Achievement Form A and Extended Test Session Observations' in dataframes[i].columns:
+                observations_dfstest.append(dataframes[i])
+        observations = pd.concat(observations_dfstest, ignore_index=True)
+        observations = observations.iloc[:, 1]
+        observations = observations.to_frame()
+        observations = observations.reindex(axis = 0)
+        for index, row in observations.iterrows():
+            comment = row['Woodcock-Johnson IV Tests of Achievement Form A and Extended Test Session Observations']
+            sentence = f"In regards to {comment}."
+            #Replaces student name FERPA
+            sentence = sentence.replace(REALSTUDENTNAME, "Placeholder")
+            sentences.append(sentence)
 
-    #Creating a sentences list for our prompt, starting with test proficiencies
-    student_name = "Placeholder"
-    sentences = []
-    for index, row in allScores.iterrows():
-        subject_area = row['Cluster']
-        proficiency = row['Proficiency']
-        sentence = f"{student_name} has {proficiency} proficiency in {subject_area}."
-        sentences.append(sentence)
+        #Joining sentences for use in prompt
+        dataForPrompt = ' '.join(map(str, sentences))
+        return dataForPrompt, REALSTUDENTNAME
 
-    #QUALITATIVE OBS added to sentences
-    observations_dfs = []
-    for i, dataframe in enumerate(dataframes):
-        if 'Woodcock-Johnson IV Tests of Achievement Form A and Extended Qualitative Observations' in dataframes[i].columns:
-            observations_dfs.append(dataframes[i])
-    observations = pd.concat(observations_dfs, ignore_index=True)
-    observations = observations.iloc[:, 1]
-    observations = observations.to_frame()
-    observations = observations.reindex(axis = 0)
-    for index, row in observations.iterrows():
-        comment = row['Woodcock-Johnson IV Tests of Achievement Form A and Extended Qualitative Observations'] 
-        sentence = f"In regards to {comment}"
-        #Replaces student name FERPA
-        sentence = sentence.replace(REALSTUDENTNAME, "Placeholder")
-        sentences.append(sentence)
-
-    #TEST OBS added to sentences
-    observations_dfstest = []
-    for i, dataframe in enumerate(dataframes):
-        if 'Woodcock-Johnson IV Tests of Achievement Form A and Extended Test Session Observations' in dataframes[i].columns:
-            observations_dfstest.append(dataframes[i])
-    observations = pd.concat(observations_dfstest, ignore_index=True)
-    observations = observations.iloc[:, 1]
-    observations = observations.to_frame()
-    observations = observations.reindex(axis = 0)
-    for index, row in observations.iterrows():
-        comment = row['Woodcock-Johnson IV Tests of Achievement Form A and Extended Test Session Observations'] 
-        sentence = f"In regards to {comment}."
-        #Replaces student name FERPA
-        sentence = sentence.replace(REALSTUDENTNAME, "Placeholder")
-        sentences.append(sentence)
-
-    #Joining sentences for use in prompt
-    dataForPrompt = ' '.join(map(str, sentences))
-
-    #Tuning our input for best results
-    promptTuning = """Write an academic assesment report based on the following data collected 
-    from the Woodcock-Johnson IV Tests of Achievement, make it do not make it flowery and also understand this student 
-    is in special education. 
-    Be sure to highlight relative strengths, also do not write in all caps. 
-    Avoid using run on sentences, try not to combine multiple subject areas into one sentence.
-    Be certain to provide specific details. 
-    Be cautious to avoid any kind of linguistic mistakes.
-    Do not make special mention of referring to the student as Placeholder, treat it as a name.
-    Data: """
+class AI(Data_Extraction):
+    def __init__(self):
+        self.promptTuning = """Write an academic assesment report based on the following data collected
+        from the Woodcock-Johnson IV Tests of Achievement, make it do not make it flowery and also understand this student
+        is in special education.
+        Be sure to highlight relative strengths, also do not write in all caps.
+        Avoid using run on sentences, try not to combine multiple subject areas into one sentence.
+        Be certain to provide specific details.
+        Be cautious to avoid any kind of linguistic mistakes.
+        Do not make special mention of referring to the student as Placeholder, treat it as a name.
+        Data: """
 
     #Beginning of AI script
     #Openai interaction function
-    def generate_chat_completion(messages, model="gpt-4", temperature=1, max_tokens=None):
+    #def generate_chat_completion(messages, model="gpt-4", temperature=1, max_tokens=None):
+    def generate_report(self, dataForPrompt, REALSTUDENTNAME, model="gpt-4", temperature=1, max_tokens=None):
+        PROMPT = ( f"{self.promptTuning}{dataForPrompt}")
+
+        #Define how gpt should act
+        messages=[
+            {"role": "system", "content": "You are a special education teacher"},
+            {"role": "user", "content": (f"{PROMPT}")},
+        ]
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {API_KEY}",
@@ -192,22 +201,13 @@ def handle_WCJ_test_files(selected_file):
             return response.json()["choices"][0]["message"]["content"]
         else:
             raise Exception(f"Error {response.status_code}: {response.text}")
-    
-    #The prompt we pass to gpt
-    PROMPT = ( f"{promptTuning}{dataForPrompt}")
-    
-    #Define how gpt should act
-    messages=[
-        {"role": "system", "content": "You are a special education teacher"},
-        {"role": "user", "content": (f"{PROMPT}")},
-    ]
-    #Call and get response
-    response_text = generate_chat_completion(messages)
-    #Replace placeholder with real student name
-    #Due to FERPA considerations this may be commented out to keep the placeholder name for outside viewing
-    response_text = response_text.replace("Placeholder", REALSTUDENTNAME)
-    return (response_text)
-
+            
+        #Call and get response
+        response_text = generate_chat_completion(messages)
+        #Replace placeholder with real student name
+        #Due to FERPA considerations this may be commented out to keep the placeholder name for outside viewing
+        response_text = response_text.replace("Placeholder", REALSTUDENTNAME)
+        return (response_text)
 
 # > GUI THINGS --------------------------------------------------------------------------
 class AutoIEPGUI:
@@ -268,7 +268,10 @@ class AutoIEPGUI:
         self.new_report_button.pack(pady=20)
 
     def api_call_thread(self, selected_file):
-        non_thread_response = handle_WCJ_test_files(selected_file)
+        data_extractor = Data_Extraction(selected_file)
+        dataForPrompt, REALSTUDENTNAME = data_extractor.handle_WCJ_test_files()
+        aiObj = AI()
+        non_thread_response = aiObj.generate_report(dataForPrompt, REALSTUDENTNAME)
         self.root.after(10, lambda: self.on_api_call_complete(non_thread_response))
 
     def delayed_file_selection(self):
